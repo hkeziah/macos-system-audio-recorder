@@ -9,6 +9,16 @@ BUILD_DIR="$SRC_DIR/build"
 echo "==> Compiling…"
 mkdir -p "$BUILD_DIR"
 
+# Detect architecture and build native only
+ARCH=$(uname -m)
+if [ "$ARCH" = "arm64" ]; then
+    echo "  Building for Apple Silicon (arm64)"
+    TARGET="arm64-apple-macos13.0"
+else
+    echo "  Building for Intel (x86_64)"
+    TARGET="x86_64-apple-macos13.0"
+fi
+
 swiftc \
     -o "$BUILD_DIR/$APP_NAME" \
     "$SRC_DIR/SystemAudioRecorder.swift" \
@@ -17,16 +27,7 @@ swiftc \
     -framework CoreAudio \
     -framework AudioToolbox \
     -O \
-    -target arm64-apple-macos13.0 \
-    -target x86_64-apple-macos13.0 2>/dev/null || \
-swiftc \
-    -o "$BUILD_DIR/$APP_NAME" \
-    "$SRC_DIR/SystemAudioRecorder.swift" \
-    -framework Cocoa \
-    -framework AVFoundation \
-    -framework CoreAudio \
-    -framework AudioToolbox \
-    -O
+    -target "$TARGET"
 
 echo "==> Creating app bundle…"
 rm -rf "$BUILD_DIR/$BUNDLE_DIR"
