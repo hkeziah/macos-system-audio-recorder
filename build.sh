@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-APP_NAME="SystemAudioRecorder"
+APP_NAME="AudioRecordTranscribe"
 BUNDLE_DIR="${APP_NAME}.app"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SRC_DIR/build"
@@ -21,7 +21,7 @@ fi
 
 swiftc \
     -o "$BUILD_DIR/$APP_NAME" \
-    "$SRC_DIR/SystemAudioRecorder.swift" \
+    "$SRC_DIR/AudioRecordTranscribe.swift" \
     -framework Cocoa \
     -framework AVFoundation \
     -framework CoreAudio \
@@ -42,13 +42,13 @@ cat > "$BUILD_DIR/$BUNDLE_DIR/Contents/Info.plist" << 'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>SystemAudioRecorder</string>
+    <string>AudioRecordTranscribe</string>
     <key>CFBundleIdentifier</key>
-    <string>com.keziah.system-audio-recorder</string>
+    <string>com.keziah.audio-record-transcribe</string>
     <key>CFBundleName</key>
-    <string>SystemAudioRecorder</string>
+    <string>AudioRecordTranscribe</string>
     <key>CFBundleDisplayName</key>
-    <string>System Audio Recorder</string>
+    <string>Audio Record and Transcribe</string>
     <key>CFBundleVersion</key>
     <string>2.0</string>
     <key>CFBundleShortVersionString</key>
@@ -66,7 +66,7 @@ cat > "$BUILD_DIR/$BUNDLE_DIR/Contents/Info.plist" << 'PLIST'
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>SystemAudioRecorder captures system audio via BlackHole virtual driver. No microphone audio is recorded.</string>
+    <string>AudioRecordTranscribe captures system audio via BlackHole virtual driver. No microphone audio is recorded.</string>
 </dict>
 </plist>
 PLIST

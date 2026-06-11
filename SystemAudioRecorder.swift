@@ -25,7 +25,7 @@ final class MainWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "System Audio Recorder"
+        window.title = "System Audio Record and Transcribe"
         window.center()
         window.isReleasedWhenClosed = false
         super.init(window: window)
@@ -39,7 +39,7 @@ final class MainWindowController: NSWindowController {
         guard let contentView = window?.contentView else { return }
 
         // ── Title ──
-        let titleLabel = NSTextField(labelWithString: "System Audio Recorder")
+        let titleLabel = NSTextField(labelWithString: "System Audio Record and Transcribe")
         titleLabel.font = NSFont.boldSystemFont(ofSize: 18)
         titleLabel.alignment = .center
         titleLabel.frame = NSRect(x: 20, y: 230, width: 380, height: 24)
