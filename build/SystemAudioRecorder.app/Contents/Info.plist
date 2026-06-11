@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>SystemAudioRecorder</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.keziah.system-audio-recorder</string>
+    <key>CFBundleName</key>
+    <string>SystemAudioRecorder</string>
+    <key>CFBundleDisplayName</key>
+    <string>System Audio Recorder</string>
+    <key>CFBundleVersion</key>
+    <string>2.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>2.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <false/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>SystemAudioRecorder captures system audio via BlackHole virtual driver. No microphone audio is recorded.</string>
+</dict>
+</plist>
