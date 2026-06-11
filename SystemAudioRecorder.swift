@@ -271,7 +271,6 @@ struct AudioDeviceFinder {
     }
 
     private static func inputChannelCount(_ deviceID: AudioDeviceID) -> UInt32 {
-        var count: UInt32 = 0
         var propertySize = UInt32(MemoryLayout<UInt32>.size)
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
@@ -489,37 +488,39 @@ final class AudioRecorder: NSObject {
         let bufferByteSize = Int(inNumberFrames) * Int(recorder.bytesPerFrame)
         var audioData = [UInt8](repeating: 0, count: bufferByteSize)
 
-        var buffer = AudioBuffer(
-            mNumberChannels: recorder.numChannels,
-            mDataByteSize: UInt32(bufferByteSize),
-            mData: &audioData
-        )
-        var bufferList = AudioBufferList(mNumberBuffers: 1, mBuffers: (buffer))
+        return audioData.withUnsafeMutableBytes { rawPtr -> OSStatus in
+            guard let baseAddr = rawPtr.baseAddress else { return noErr }
 
-        var status = AudioUnitRender(au, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, &bufferList)
-        guard status == noErr else { return status }
+            var buffer = AudioBuffer(
+                mNumberChannels: recorder.numChannels,
+                mDataByteSize: UInt32(bufferByteSize),
+                mData: baseAddr
+            )
+            var bufferList = AudioBufferList(mNumberBuffers: 1, mBuffers: (buffer))
 
-        status = ExtAudioFileWrite(file, inNumberFrames, &bufferList)
+            var status = AudioUnitRender(au, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, &bufferList)
+            guard status == noErr else { return status }
 
-        // ── Silence detection for auto-stop ──
-        let sampleCount = bufferByteSize / 2  // 16-bit = 2 bytes per sample
-        var peak: Float = 0
-        audioData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
-            let samples = ptr.bindMemory(to: Int16.self)
+            status = ExtAudioFileWrite(file, inNumberFrames, &bufferList)
+
+            // ── Silence detection for auto-stop ──
+            let samples = rawPtr.bindMemory(to: Int16.self)
+            let sampleCount = bufferByteSize / 2
+            var peak: Float = 0
             for i in 0..<sampleCount {
                 let f = abs(Float(samples[i]) / 32768.0)
                 if f > peak { peak = f }
             }
-        }
-        recorder.currentPeakLevel = peak
+            recorder.currentPeakLevel = peak
 
-        if peak < recorder.silenceThreshold {
-            recorder.silentFrames += Int64(inNumberFrames)
-        } else {
-            recorder.silentFrames = 0
-        }
+            if peak < recorder.silenceThreshold {
+                recorder.silentFrames += Int64(inNumberFrames)
+            } else {
+                recorder.silentFrames = 0
+            }
 
-        return status
+            return status
+        }
     }
 }
 
