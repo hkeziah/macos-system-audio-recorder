@@ -71,6 +71,7 @@ PLIST
 # Simple icon
 ICON_DIR="$BUILD_DIR/icon_tmp"
 mkdir -p "$ICON_DIR"
+export ICON_DIR
 
 python3 << 'PYEOF'
 import struct, zlib, os
@@ -108,7 +109,7 @@ def create_png(width, height, filename):
     with open(filename, 'wb') as f:
         f.write(header + ihdr + idat + iend)
 
-out = os.path.join(os.path.dirname(__file__) or '.', 'icon_tmp', 'icon_512.png')
+out = os.path.join(os.environ.get('ICON_DIR', '/tmp/icon_tmp'), 'icon_512.png')
 create_png(512, 512, out)
 PYEOF
 
