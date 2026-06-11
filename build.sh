@@ -26,7 +26,6 @@ swiftc \
     -framework AVFoundation \
     -framework CoreAudio \
     -framework AudioToolbox \
-    -framework Speech \
     -O \
     -target "$TARGET"
 
@@ -68,8 +67,6 @@ cat > "$BUILD_DIR/$BUNDLE_DIR/Contents/Info.plist" << 'PLIST'
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>SystemAudioRecorder captures system audio via BlackHole virtual driver. No microphone audio is recorded.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>SystemAudioRecorder uses on-device speech recognition to transcribe recordings into markdown files.</string>
 </dict>
 </plist>
 PLIST

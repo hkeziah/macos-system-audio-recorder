@@ -2,7 +2,6 @@ import Cocoa
 import AVFoundation
 import CoreAudio
 import AudioToolbox
-import Speech
 
 // ─── Main Window Controller ──────────────────────────────────────────────
 
@@ -598,41 +597,65 @@ enum RecorderError: LocalizedError {
 // ─── Transcriber ──────────────────────────────────────────────────────────
 
 final class Transcriber {
-    /// Transcribes a WAV file to markdown using on-device speech recognition.
+    /// Transcribes a WAV file to markdown using whisper.cpp (local, fast, offline).
     static func transcribe(_ audioURL: URL, completion: @escaping (Result<URL, Error>) -> Void) {
-        SFSpeechRecognizer.requestAuthorization { status in
-            guard status == .authorized else {
-                completion(.failure(TranscriberError.notAuthorized))
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Find whisper-cpp binary
+            let whisperBin: String
+            if let brew = findBrewBinary("whisper-cpp") {
+                whisperBin = brew
+            } else if let path = findInPath("whisper-cpp") {
+                whisperBin = path
+            } else {
+                completion(.failure(TranscriberError.whisperNotInstalled))
                 return
             }
 
-            let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-            guard let recognizer = recognizer, recognizer.isAvailable else {
-                completion(.failure(TranscriberError.unavailable))
+            // Find model
+            let modelPath = NSHomeDirectory() + "/whisper-models/ggml-tiny.en.bin"
+            guard FileManager.default.fileExists(atPath: modelPath) else {
+                completion(.failure(TranscriberError.modelNotFound(modelPath)))
                 return
             }
 
-            // Require on-device so it works offline
-            guard recognizer.supportsOnDeviceRecognition else {
-                completion(.failure(TranscriberError.needsNetwork))
-                return
-            }
+            // Output path (whisper-cpp appends .txt)
+            let basePath = audioURL.deletingPathExtension().path
 
-            let request = SFSpeechURLRecognitionRequest(url: audioURL)
-            request.requiresOnDeviceRecognition = true
-            request.shouldReportPartialResults = false
-            request.taskHint = .dictation
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: whisperBin)
+            process.arguments = [
+                "-m", modelPath,
+                "-f", audioURL.path,
+                "-otxt",
+                "-of", basePath,
+                "--no-timestamps",
+                "-l", "en"
+            ]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
 
-            recognizer.recognitionTask(with: request) { result, error in
-                if let error = error {
-                    completion(.failure(error))
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                guard process.terminationStatus == 0 else {
+                    completion(.failure(TranscriberError.whisperFailed(process.terminationStatus)))
                     return
                 }
-                guard let result = result, result.isFinal else { return }
 
-                let transcript = result.bestTranscription.formattedString
+                // Read whisper.cpp output
+                let txtPath = basePath + ".txt"
+                guard let transcript = try? String(contentsOfFile: txtPath, encoding: .utf8),
+                      !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    completion(.failure(TranscriberError.noTranscript))
+                    return
+                }
+
+                // Clean up the .txt file
+                try? FileManager.default.removeItem(atPath: txtPath)
+
+                // Write markdown
                 let mdURL = audioURL.deletingPathExtension().appendingPathExtension("md")
-
                 let formatter = DateFormatter()
                 formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
                 let timestamp = formatter.string(from: Date())
@@ -642,33 +665,65 @@ final class Transcriber {
                 # Transcription: \(sourceName)
                 **Recorded:** \(timestamp)
 
-                \(transcript)
+                \(transcript.trimmingCharacters(in: .whitespacesAndNewlines))
                 """
 
-                do {
-                    try md.write(to: mdURL, atomically: true, encoding: .utf8)
-                    completion(.success(mdURL))
-                } catch {
-                    completion(.failure(error))
-                }
+                try md.write(to: mdURL, atomically: true, encoding: .utf8)
+                completion(.success(mdURL))
+
+            } catch {
+                completion(.failure(error))
             }
         }
+    }
+
+    private static func findBrewBinary(_ name: String) -> String? {
+        let brewPrefixes = ["/opt/homebrew/bin", "/usr/local/bin"]
+        for prefix in brewPrefixes {
+            let path = prefix + "/" + name
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private static func findInPath(_ name: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        process.arguments = [name]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let path = path, !path.isEmpty, process.terminationStatus == 0 {
+                return path
+            }
+        } catch {}
+        return nil
     }
 }
 
 enum TranscriberError: LocalizedError {
-    case notAuthorized
-    case unavailable
-    case needsNetwork
+    case whisperNotInstalled
+    case modelNotFound(String)
+    case whisperFailed(Int32)
+    case noTranscript
 
     var errorDescription: String? {
         switch self {
-        case .notAuthorized:
-            return "Speech recognition not authorized. Grant permission in System Settings → Privacy → Speech Recognition."
-        case .unavailable:
-            return "Speech recognizer unavailable."
-        case .needsNetwork:
-            return "On-device recognition required but not supported on this device."
+        case .whisperNotInstalled:
+            return "whisper-cpp not found. Install: brew install whisper-cpp"
+        case .modelNotFound(let path):
+            return "Whisper model not found at \(path). Download: curl -L -o \(path) https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin"
+        case .whisperFailed(let code):
+            return "whisper-cpp exited with code \(code)"
+        case .noTranscript:
+            return "No speech detected in recording"
         }
     }
 }
