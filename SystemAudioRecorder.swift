@@ -600,11 +600,11 @@ final class Transcriber {
     /// Transcribes a WAV file to markdown using whisper.cpp (local, fast, offline).
     static func transcribe(_ audioURL: URL, completion: @escaping (Result<URL, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            // Find whisper-cpp binary
+            // Find whisper-cli binary
             let whisperBin: String
-            if let brew = findBrewBinary("whisper-cpp") {
+            if let brew = findBrewBinary("whisper-cli") {
                 whisperBin = brew
-            } else if let path = findInPath("whisper-cpp") {
+            } else if let path = findInPath("whisper-cli") {
                 whisperBin = path
             } else {
                 completion(.failure(TranscriberError.whisperNotInstalled))
@@ -618,7 +618,7 @@ final class Transcriber {
                 return
             }
 
-            // Output path (whisper-cpp appends .txt)
+            // Output path (whisper-cli appends .txt)
             let basePath = audioURL.deletingPathExtension().path
 
             let process = Process()
@@ -717,11 +717,11 @@ enum TranscriberError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .whisperNotInstalled:
-            return "whisper-cpp not found. Install: brew install whisper-cpp"
+            return "whisper-cli not found. Install: brew install whisper-cli"
         case .modelNotFound(let path):
             return "Whisper model not found at \(path). Download: curl -L -o \(path) https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin"
         case .whisperFailed(let code):
-            return "whisper-cpp exited with code \(code)"
+            return "whisper-cli exited with code \(code)"
         case .noTranscript:
             return "No speech detected in recording"
         }
