@@ -13,6 +13,8 @@ final class MainWindowController: NSWindowController {
     private var outputLabel: NSTextField!
     private var durationTimer: Timer?
     private var recordingStartTime: Date?
+    private var levelLabel: NSTextField!
+    private var silenceLabel: NSTextField!
 
     init() {
         let window = NSWindow(
@@ -61,16 +63,34 @@ final class MainWindowController: NSWindowController {
         durationLabel = NSTextField(labelWithString: "")
         durationLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .medium)
         durationLabel.alignment = .center
-        durationLabel.frame = NSRect(x: 20, y: 100, width: 380, height: 26)
+        durationLabel.frame = NSRect(x: 20, y: 105, width: 380, height: 26)
         durationLabel.isHidden = true
         contentView.addSubview(durationLabel)
+
+        // ── Audio level meter ──
+        levelLabel = NSTextField(labelWithString: "")
+        levelLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        levelLabel.alignment = .center
+        levelLabel.textColor = .tertiaryLabelColor
+        levelLabel.frame = NSRect(x: 20, y: 85, width: 380, height: 16)
+        levelLabel.isHidden = true
+        contentView.addSubview(levelLabel)
+
+        // ── Silence countdown ──
+        silenceLabel = NSTextField(labelWithString: "")
+        silenceLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        silenceLabel.alignment = .center
+        silenceLabel.textColor = .secondaryLabelColor
+        silenceLabel.frame = NSRect(x: 20, y: 68, width: 380, height: 16)
+        silenceLabel.isHidden = true
+        contentView.addSubview(silenceLabel)
 
         // ── Output folder ──
         let folderLabel = NSTextField(labelWithString: "Saves to: /Users/howardkeziah/System-Audio-Recordings/")
         folderLabel.font = NSFont.systemFont(ofSize: 10)
         folderLabel.textColor = .tertiaryLabelColor
         folderLabel.alignment = .center
-        folderLabel.frame = NSRect(x: 20, y: 70, width: 380, height: 16)
+        folderLabel.frame = NSRect(x: 20, y: 52, width: 380, height: 16)
         contentView.addSubview(folderLabel)
 
         // ── Show in Finder ──
@@ -108,6 +128,8 @@ final class MainWindowController: NSWindowController {
             statusLabel.stringValue = "●  Recording system audio…"
             statusLabel.textColor = .systemRed
             durationLabel.isHidden = false
+            levelLabel.isHidden = false
+            silenceLabel.isHidden = false
             recordingStartTime = Date()
             startDurationTimer()
         } else {
@@ -116,6 +138,8 @@ final class MainWindowController: NSWindowController {
             statusLabel.stringValue = "Ready"
             statusLabel.textColor = .secondaryLabelColor
             durationLabel.isHidden = true
+            levelLabel.isHidden = true
+            silenceLabel.isHidden = true
             durationTimer?.invalidate()
             durationTimer = nil
             recordingStartTime = nil
@@ -131,6 +155,29 @@ final class MainWindowController: NSWindowController {
             let m = (Int(elapsed) % 3600) / 60
             let s = Int(elapsed) % 60
             self.durationLabel.stringValue = String(format: "%02d:%02d:%02d", h, m, s)
+
+            // Audio level
+            let db: Float = self.recorder.currentPeakLevel > 0
+                ? 20 * log10(self.recorder.currentPeakLevel)
+                : -96
+            let bar = String(repeating: "█", count: max(1, Int((db + 60) / 3)))
+            self.levelLabel.stringValue = String(format: "Level: %.1f dB  %@", db, bar)
+
+            // Silence countdown
+            let silentSec = self.recorder.silentSeconds
+            if silentSec > 0 {
+                self.silenceLabel.stringValue = String(format: "Silence: %.0fs / %.0fs", silentSec, self.recorder.maxSilentSeconds)
+            } else {
+                self.silenceLabel.stringValue = ""
+            }
+
+            // Check for silence auto-stop
+            if silentSec >= self.recorder.maxSilentSeconds {
+                self.recorder.stop()
+                let sec = Int(self.recorder.maxSilentSeconds)
+                self.statusLabel.stringValue = "Stopped — \(sec)s silence detected"
+                self.statusLabel.textColor = .secondaryLabelColor
+            }
         }
     }
 
@@ -253,6 +300,10 @@ final class AudioRecorder: NSObject {
     private var fileURL: URL?
     private var numChannels: UInt32 = 2
     private var bytesPerFrame: UInt32 = 4
+    private var sampleRate: Float64 = 44100
+    private var silentFrames: Int64 = 0
+    let maxSilentSeconds: Float64 = 60.0
+    private let silenceThreshold: Float = 0.001   // Peak below this = silence (-60dB)
 
     let outputDirectory: URL = {
         let dir = URL(fileURLWithPath: "/Users/howardkeziah/System-Audio-Recordings", isDirectory: true)
@@ -262,6 +313,11 @@ final class AudioRecorder: NSObject {
 
     var onStateChange: ((Bool) -> Void)?
     var onError: ((String) -> Void)?
+    var onAutoStopped: (() -> Void)?
+    var currentPeakLevel: Float = 0         // Read by UI thread
+    var silentSeconds: Float64 {
+        Float64(silentFrames) / sampleRate
+    }
     var recording: Bool { isRecording }
 
     func start(deviceID: AudioDeviceID) throws {
@@ -349,6 +405,8 @@ final class AudioRecorder: NSObject {
 
         numChannels = clientFormat.mChannelsPerFrame
         bytesPerFrame = clientFormat.mBytesPerFrame
+        sampleRate = clientFormat.mSampleRate
+        silentFrames = 0
 
         status = AudioUnitSetProperty(audioUnit!, kAudioUnitProperty_StreamFormat,
                                       kAudioUnitScope_Output, inputElement, &clientFormat, formatSize)
@@ -442,6 +500,25 @@ final class AudioRecorder: NSObject {
         guard status == noErr else { return status }
 
         status = ExtAudioFileWrite(file, inNumberFrames, &bufferList)
+
+        // ── Silence detection for auto-stop ──
+        let sampleCount = bufferByteSize / 2  // 16-bit = 2 bytes per sample
+        var peak: Float = 0
+        audioData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
+            let samples = ptr.bindMemory(to: Int16.self)
+            for i in 0..<sampleCount {
+                let f = abs(Float(samples[i]) / 32768.0)
+                if f > peak { peak = f }
+            }
+        }
+        recorder.currentPeakLevel = peak
+
+        if peak < recorder.silenceThreshold {
+            recorder.silentFrames += Int64(inNumberFrames)
+        } else {
+            recorder.silentFrames = 0
+        }
+
         return status
     }
 }
