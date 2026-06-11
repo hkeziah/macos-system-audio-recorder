@@ -2,6 +2,7 @@ import Cocoa
 import AVFoundation
 import CoreAudio
 import AudioToolbox
+import Speech
 
 // ─── Main Window Controller ──────────────────────────────────────────────
 
@@ -15,10 +16,12 @@ final class MainWindowController: NSWindowController {
     private var recordingStartTime: Date?
     private var levelLabel: NSTextField!
     private var silenceLabel: NSTextField!
+    private var transcribeToggle: NSButton!
+    private var transcribeLabel: NSTextField!
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 280),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 310),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -95,10 +98,22 @@ final class MainWindowController: NSWindowController {
 
         // ── Show in Finder ──
         let finderBtn = NSButton(title: "Show Recordings in Finder", target: self, action: #selector(showInFinder))
-        finderBtn.frame = NSRect(x: 130, y: 35, width: 160, height: 24)
+        finderBtn.frame = NSRect(x: 130, y: 55, width: 160, height: 24)
         finderBtn.bezelStyle = .rounded
         finderBtn.font = NSFont.systemFont(ofSize: 11)
         contentView.addSubview(finderBtn)
+
+        // ── Transcription toggle ──
+        transcribeToggle = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleTranscription))
+        transcribeToggle.frame = NSRect(x: 80, y: 28, width: 20, height: 20)
+        transcribeToggle.state = .off
+        contentView.addSubview(transcribeToggle)
+
+        transcribeLabel = NSTextField(labelWithString: "Transcribe to markdown when recording stops")
+        transcribeLabel.font = NSFont.systemFont(ofSize: 10)
+        transcribeLabel.textColor = .secondaryLabelColor
+        transcribeLabel.frame = NSRect(x: 104, y: 30, width: 270, height: 16)
+        contentView.addSubview(transcribeLabel)
 
         // ── Requirement note ──
         let noteLabel = NSTextField(labelWithString: "Requires BlackHole. Download: github.com/ExistentialAudio/BlackHole")
@@ -177,13 +192,14 @@ final class MainWindowController: NSWindowController {
                 let sec = Int(self.recorder.maxSilentSeconds)
                 self.statusLabel.stringValue = "Stopped — \(sec)s silence detected"
                 self.statusLabel.textColor = .secondaryLabelColor
+                self.maybeTranscribe()
             }
         }
     }
 
     @objc private func toggleRecording() {
         if recorder.recording {
-            recorder.stop()
+            stopAndMaybeTranscribe()
         } else {
             guard let deviceID = AudioDeviceFinder.findBlackHole() else {
                 showBlackHoleMissing()
@@ -199,6 +215,42 @@ final class MainWindowController: NSWindowController {
 
     @objc private func showInFinder() {
         NSWorkspace.shared.open(recorder.outputDirectory)
+    }
+
+    @objc private func toggleTranscription() {
+        // Just toggles the checkbox state; checked state read at stop time
+    }
+
+    private func stopAndMaybeTranscribe() {
+        let fileURL = recorder.lastRecordedFileURL
+        recorder.stop()
+        if transcribeToggle.state == .on, let url = fileURL {
+            transcribe(url)
+        }
+    }
+
+    private func maybeTranscribe() {
+        if transcribeToggle.state == .on, let url = recorder.lastRecordedFileURL {
+            transcribe(url)
+        }
+    }
+
+    private func transcribe(_ audioURL: URL) {
+        statusLabel.stringValue = "Transcribing…"
+        statusLabel.textColor = .systemOrange
+        Transcriber.transcribe(audioURL) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let mdURL):
+                    self?.statusLabel.stringValue = "Transcription saved"
+                    self?.statusLabel.textColor = .secondaryLabelColor
+                    NSWorkspace.shared.activateFileViewerSelecting([mdURL])
+                case .failure(let error):
+                    self?.statusLabel.stringValue = "Transcription failed: \(error.localizedDescription)"
+                    self?.statusLabel.textColor = .systemRed
+                }
+            }
+        }
     }
 
     private func showError(_ message: String) {
@@ -318,6 +370,7 @@ final class AudioRecorder: NSObject {
         Float64(silentFrames) / sampleRate
     }
     var recording: Bool { isRecording }
+    var lastRecordedFileURL: URL? { fileURL }
 
     func start(deviceID: AudioDeviceID) throws {
         guard !isRecording else { return }
@@ -538,6 +591,84 @@ enum RecorderError: LocalizedError {
         case .streamFormatError: return "Could not configure audio stream format."
         case .audioUnitInitFailed(let s): return "Audio unit init failed (error \(s))."
         case .audioUnitStartFailed(let s): return "Audio unit start failed (error \(s))."
+        }
+    }
+}
+
+// ─── Transcriber ──────────────────────────────────────────────────────────
+
+final class Transcriber {
+    /// Transcribes a WAV file to markdown using on-device speech recognition.
+    static func transcribe(_ audioURL: URL, completion: @escaping (Result<URL, Error>) -> Void) {
+        SFSpeechRecognizer.requestAuthorization { status in
+            guard status == .authorized else {
+                completion(.failure(TranscriberError.notAuthorized))
+                return
+            }
+
+            let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+            guard let recognizer = recognizer, recognizer.isAvailable else {
+                completion(.failure(TranscriberError.unavailable))
+                return
+            }
+
+            // Require on-device so it works offline
+            guard recognizer.supportsOnDeviceRecognition else {
+                completion(.failure(TranscriberError.needsNetwork))
+                return
+            }
+
+            let request = SFSpeechURLRecognitionRequest(url: audioURL)
+            request.requiresOnDeviceRecognition = true
+            request.shouldReportPartialResults = false
+            request.taskHint = .dictation
+
+            recognizer.recognitionTask(with: request) { result, error in
+                if let error = error {
+                    completion(.failure(error))
+                    return
+                }
+                guard let result = result, result.isFinal else { return }
+
+                let transcript = result.bestTranscription.formattedString
+                let mdURL = audioURL.deletingPathExtension().appendingPathExtension("md")
+
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                let timestamp = formatter.string(from: Date())
+                let sourceName = audioURL.deletingPathExtension().lastPathComponent
+
+                let md = """
+                # Transcription: \(sourceName)
+                **Recorded:** \(timestamp)
+
+                \(transcript)
+                """
+
+                do {
+                    try md.write(to: mdURL, atomically: true, encoding: .utf8)
+                    completion(.success(mdURL))
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+}
+
+enum TranscriberError: LocalizedError {
+    case notAuthorized
+    case unavailable
+    case needsNetwork
+
+    var errorDescription: String? {
+        switch self {
+        case .notAuthorized:
+            return "Speech recognition not authorized. Grant permission in System Settings → Privacy → Speech Recognition."
+        case .unavailable:
+            return "Speech recognizer unavailable."
+        case .needsNetwork:
+            return "On-device recognition required but not supported on this device."
         }
     }
 }
