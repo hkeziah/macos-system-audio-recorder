@@ -3,140 +3,210 @@ import AVFoundation
 import CoreAudio
 import AudioToolbox
 
-// ─── Status Bar Controller ───────────────────────────────────────────────
+// ─── Main Window Controller ──────────────────────────────────────────────
 
-final class StatusBarController: NSObject {
-    private var statusItem: NSStatusItem!
-    private var menu: NSMenu!
-    private var startItem: NSMenuItem!
-    private var stopItem: NSMenuItem!
-    private var settingsItem: NSMenuItem!
+final class MainWindowController: NSWindowController {
+    private let recorder = AudioRecorder()
+    private var recordButton: NSButton!
+    private var statusLabel: NSTextField!
+    private var durationLabel: NSTextField!
+    private var outputLabel: NSTextField!
+    private var durationTimer: Timer?
+    private var recordingStartTime: Date?
 
-    weak var delegate: AppDelegate?
-
-    func setup(delegate: AppDelegate) {
-        self.delegate = delegate
-
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        updateIcon(recording: false)
-
-        menu = NSMenu()
-
-        startItem = NSMenuItem(title: "Start Recording", action: #selector(startAction), keyEquivalent: "")
-        startItem.target = self
-        menu.addItem(startItem)
-
-        stopItem = NSMenuItem(title: "Stop Recording", action: #selector(stopAction), keyEquivalent: "")
-        stopItem.target = self
-        stopItem.isEnabled = false
-        menu.addItem(stopItem)
-
-        menu.addItem(.separator())
-
-        settingsItem = NSMenuItem(title: "Settings…", action: #selector(settingsAction), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-
-        menu.addItem(.separator())
-
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitAction), keyEquivalent: "q", target: self))
-
-        statusItem.menu = menu
+    init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 280),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "System Audio Recorder"
+        window.center()
+        window.isReleasedWhenClosed = false
+        super.init(window: window)
+        buildUI()
+        updateUI(recording: false)
     }
 
-    func updateIcon(recording: Bool) {
-        if let button = statusItem.button {
-            if recording {
-                button.attributedTitle = NSAttributedString(
-                    string: "●",
-                    attributes: [
-                        .font: NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .bold),
-                        .foregroundColor: NSColor.systemRed,
-                        .baselineOffset: -1
-                    ]
-                )
-            } else {
-                button.attributedTitle = NSAttributedString(
-                    string: "◎",
-                    attributes: [
-                        .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
-                        .baselineOffset: -1
-                    ]
-                )
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func buildUI() {
+        guard let contentView = window?.contentView else { return }
+
+        // ── Title ──
+        let titleLabel = NSTextField(labelWithString: "System Audio Recorder")
+        titleLabel.font = NSFont.boldSystemFont(ofSize: 18)
+        titleLabel.alignment = .center
+        titleLabel.frame = NSRect(x: 20, y: 230, width: 380, height: 24)
+        contentView.addSubview(titleLabel)
+
+        // ── Status indicator ──
+        statusLabel = NSTextField(labelWithString: "Ready")
+        statusLabel.font = NSFont.systemFont(ofSize: 13)
+        statusLabel.alignment = .center
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.frame = NSRect(x: 20, y: 205, width: 380, height: 18)
+        contentView.addSubview(statusLabel)
+
+        // ── Record Button ──
+        recordButton = NSButton(title: "Start Recording", target: self, action: #selector(toggleRecording))
+        recordButton.frame = NSRect(x: 110, y: 135, width: 200, height: 52)
+        recordButton.bezelStyle = .rounded
+        recordButton.font = NSFont.boldSystemFont(ofSize: 15)
+        recordButton.keyEquivalent = "\r" // Enter key toggles
+        contentView.addSubview(recordButton)
+
+        // ── Duration ──
+        durationLabel = NSTextField(labelWithString: "")
+        durationLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .medium)
+        durationLabel.alignment = .center
+        durationLabel.frame = NSRect(x: 20, y: 100, width: 380, height: 26)
+        durationLabel.isHidden = true
+        contentView.addSubview(durationLabel)
+
+        // ── Output folder ──
+        let folderLabel = NSTextField(labelWithString: "Saves to: /Users/howardkeziah/System-Audio-Recordings/")
+        folderLabel.font = NSFont.systemFont(ofSize: 10)
+        folderLabel.textColor = .tertiaryLabelColor
+        folderLabel.alignment = .center
+        folderLabel.frame = NSRect(x: 20, y: 70, width: 380, height: 16)
+        contentView.addSubview(folderLabel)
+
+        // ── Show in Finder ──
+        let finderBtn = NSButton(title: "Show Recordings in Finder", target: self, action: #selector(showInFinder))
+        finderBtn.frame = NSRect(x: 130, y: 35, width: 160, height: 24)
+        finderBtn.bezelStyle = .rounded
+        finderBtn.font = NSFont.systemFont(ofSize: 11)
+        contentView.addSubview(finderBtn)
+
+        // ── Requirement note ──
+        let noteLabel = NSTextField(labelWithString: "Requires BlackHole. Download: github.com/ExistentialAudio/BlackHole")
+        noteLabel.font = NSFont.systemFont(ofSize: 9)
+        noteLabel.textColor = .quaternaryLabelColor
+        noteLabel.alignment = .center
+        noteLabel.frame = NSRect(x: 20, y: 8, width: 380, height: 14)
+        contentView.addSubview(noteLabel)
+
+        // ── Set up callbacks ──
+        recorder.onStateChange = { [weak self] recording in
+            DispatchQueue.main.async {
+                self?.updateUI(recording: recording)
+            }
+        }
+        recorder.onError = { [weak self] msg in
+            DispatchQueue.main.async {
+                self?.showError(msg)
             }
         }
     }
 
-    func setRecordingState(_ recording: Bool) {
-        startItem.isEnabled = !recording
-        stopItem.isEnabled = recording
-        updateIcon(recording: recording)
+    private func updateUI(recording: Bool) {
+        if recording {
+            recordButton.title = "■  Stop Recording"
+            recordButton.contentTintColor = .systemRed
+            statusLabel.stringValue = "●  Recording system audio…"
+            statusLabel.textColor = .systemRed
+            durationLabel.isHidden = false
+            recordingStartTime = Date()
+            startDurationTimer()
+        } else {
+            recordButton.title = "●  Start Recording"
+            recordButton.contentTintColor = nil
+            statusLabel.stringValue = "Ready"
+            statusLabel.textColor = .secondaryLabelColor
+            durationLabel.isHidden = true
+            durationTimer?.invalidate()
+            durationTimer = nil
+            recordingStartTime = nil
+        }
     }
 
-    @objc private func startAction() { delegate?.startRecording() }
-    @objc private func stopAction()  { delegate?.stopRecording() }
-    @objc private func settingsAction() { delegate?.showSettings() }
-    @objc private func quitAction()  { NSApplication.shared.terminate(nil) }
+    private func startDurationTimer() {
+        durationTimer?.invalidate()
+        durationTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self = self, let start = self.recordingStartTime else { return }
+            let elapsed = Date().timeIntervalSince(start)
+            let h = Int(elapsed) / 3600
+            let m = (Int(elapsed) % 3600) / 60
+            let s = Int(elapsed) % 60
+            self.durationLabel.stringValue = String(format: "%02d:%02d:%02d", h, m, s)
+        }
+    }
+
+    @objc private func toggleRecording() {
+        if recorder.recording {
+            recorder.stop()
+        } else {
+            guard let deviceID = AudioDeviceFinder.findBlackHole() else {
+                showBlackHoleMissing()
+                return
+            }
+            do {
+                try recorder.start(deviceID: deviceID)
+            } catch {
+                showError(error.localizedDescription)
+            }
+        }
+    }
+
+    @objc private func showInFinder() {
+        NSWorkspace.shared.open(recorder.outputDirectory)
+    }
+
+    private func showError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Recording Error"
+        alert.informativeText = message
+        alert.alertStyle = .critical
+        alert.runModal()
+    }
+
+    private func showBlackHoleMissing() {
+        let alert = NSAlert()
+        alert.messageText = "BlackHole Not Installed"
+        alert.informativeText = """
+        System audio recording requires BlackHole, a free virtual audio driver.
+
+        1. Download from github.com/ExistentialAudio/BlackHole/releases
+        2. Install the .pkg and restart your Mac
+        3. Open Audio MIDI Setup → + → Create Multi-Output Device
+        4. Check both \"BlackHole 2ch\" and your speakers
+        5. Right-click → \"Use This Device For Sound Output\"
+
+        This lets you hear audio while recording it.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Download BlackHole")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "https://github.com/ExistentialAudio/BlackHole/releases")!)
+        }
+    }
 }
 
 // ─── Audio Device Finder ─────────────────────────────────────────────────
 
 struct AudioDeviceFinder {
-    /// Returns the AudioDeviceID for the BlackHole device, or nil if not found.
     static func findBlackHole() -> AudioDeviceID? {
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-
         var dataSize: UInt32 = 0
-        var status = AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress, 0, nil, &dataSize
-        )
-        guard status == noErr else { return nil }
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize) == noErr else { return nil }
 
         let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
         var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
-        status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress, 0, nil, &dataSize, &deviceIDs
-        )
-        guard status == noErr else { return nil }
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceIDs) == noErr else { return nil }
 
         for deviceID in deviceIDs {
-            if let name = deviceName(deviceID), name.lowercased().contains("blackhole") {
-                // Verify it has input channels
-                if inputChannelCount(deviceID) > 0 {
-                    return deviceID
-                }
+            if let name = deviceName(deviceID), name.lowercased().contains("blackhole"), inputChannelCount(deviceID) > 0 {
+                return deviceID
             }
         }
         return nil
-    }
-
-    /// Returns a list of all available input device names + IDs
-    static func listInputDevices() -> [(id: AudioDeviceID, name: String)] {
-        var results: [(AudioDeviceID, String)] = []
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var dataSize: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize) == noErr else { return results }
-
-        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
-        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceIDs) == noErr else { return results }
-
-        for deviceID in deviceIDs {
-            if let name = deviceName(deviceID), inputChannelCount(deviceID) > 0 {
-                results.append((deviceID, name))
-            }
-        }
-        return results
     }
 
     private static func deviceName(_ deviceID: AudioDeviceID) -> String? {
@@ -174,27 +244,25 @@ struct AudioDeviceFinder {
     }
 }
 
-// ─── Audio Recorder ──────────────────────────────────────────────────────
+// ─── Audio Recorder Engine ───────────────────────────────────────────────
 
 final class AudioRecorder: NSObject {
     private var audioUnit: AudioUnit?
     private var outputFile: ExtAudioFileRef?
     private var isRecording = false
     private var fileURL: URL?
-    private var outputDir: URL
     private var numChannels: UInt32 = 2
     private var bytesPerFrame: UInt32 = 4
 
-    override init() {
-        outputDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Desktop")
-            .appendingPathComponent("SystemAudio")
-        super.init()
-        try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-    }
+    let outputDirectory: URL = {
+        let dir = URL(fileURLWithPath: "/Users/howardkeziah/System-Audio-Recordings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
 
     var onStateChange: ((Bool) -> Void)?
     var onError: ((String) -> Void)?
+    var recording: Bool { isRecording }
 
     func start(deviceID: AudioDeviceID) throws {
         guard !isRecording else { return }
@@ -203,9 +271,9 @@ final class AudioRecorder: NSObject {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let filename = "SystemAudio_\(formatter.string(from: Date())).wav"
-        fileURL = outputDir.appendingPathComponent(filename)
+        fileURL = outputDirectory.appendingPathComponent(filename)
 
-        var audioStreamDesc = AudioStreamBasicDescription(
+        var fileFormat = AudioStreamBasicDescription(
             mSampleRate: 44100,
             mFormatID: kAudioFormatLinearPCM,
             mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
@@ -220,16 +288,14 @@ final class AudioRecorder: NSObject {
         var status = ExtAudioFileCreateWithURL(
             fileURL! as CFURL,
             kAudioFileWAVEType,
-            &audioStreamDesc,
+            &fileFormat,
             nil,
             AudioFileFlags.eraseFile.rawValue,
             &outputFile
         )
-        guard status == noErr else {
-            throw RecorderError.fileCreationFailed
-        }
+        guard status == noErr else { throw RecorderError.fileCreationFailed }
 
-        // ── Create HAL AudioUnit ──
+        // ── Create HAL AudioUnit for the specific input device ──
         var componentDesc = AudioComponentDescription(
             componentType: kAudioUnitType_Output,
             componentSubType: kAudioUnitSubType_HALOutput,
@@ -239,57 +305,58 @@ final class AudioRecorder: NSObject {
         )
 
         guard let component = AudioComponentFindNext(nil, &componentDesc) else {
+            if let file = outputFile { ExtAudioFileDispose(file); outputFile = nil }
             throw RecorderError.audioUnitCreationFailed
         }
 
         status = AudioComponentInstanceNew(component, &audioUnit)
         guard status == noErr else {
+            if let file = outputFile { ExtAudioFileDispose(file); outputFile = nil }
             throw RecorderError.audioUnitCreationFailed
         }
 
         // Enable input, disable output
         var enable: UInt32 = 1
         var disable: UInt32 = 0
-        let elementInput: AudioUnitElement = 1
-        let elementOutput: AudioUnitElement = 0
+        let inputElement: AudioUnitElement = 1
+        let outputElement: AudioUnitElement = 0
 
         AudioUnitSetProperty(audioUnit!, kAudioOutputUnitProperty_EnableIO,
-                             kAudioUnitScope_Input, elementInput, &enable, UInt32(MemoryLayout<UInt32>.size))
+                             kAudioUnitScope_Input, inputElement, &enable, UInt32(MemoryLayout<UInt32>.size))
         AudioUnitSetProperty(audioUnit!, kAudioOutputUnitProperty_EnableIO,
-                             kAudioUnitScope_Output, elementOutput, &disable, UInt32(MemoryLayout<UInt32>.size))
+                             kAudioUnitScope_Output, outputElement, &disable, UInt32(MemoryLayout<UInt32>.size))
 
-        // Set the input device
+        // Set the BlackHole device
         var inputDeviceID = deviceID
         AudioUnitSetProperty(audioUnit!, kAudioOutputUnitProperty_CurrentDevice,
                              kAudioUnitScope_Global, 0, &inputDeviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
 
-        // Get device's actual stream format
+        // Get and configure stream format
         var deviceFormat = AudioStreamBasicDescription()
         var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         status = AudioUnitGetProperty(audioUnit!, kAudioUnitProperty_StreamFormat,
-                                      kAudioUnitScope_Input, elementInput, &deviceFormat, &formatSize)
+                                      kAudioUnitScope_Input, inputElement, &deviceFormat, &formatSize)
         guard status == noErr else {
+            cleanup()
             throw RecorderError.streamFormatError
         }
 
-        // Set client format (what we want the callbacks to deliver — 16-bit int is easier)
         var clientFormat = deviceFormat
         clientFormat.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked
         clientFormat.mBitsPerChannel = 16
         clientFormat.mBytesPerFrame = 2 * clientFormat.mChannelsPerFrame
         clientFormat.mBytesPerPacket = clientFormat.mBytesPerFrame
 
-        // Store for use in the render callback
         numChannels = clientFormat.mChannelsPerFrame
         bytesPerFrame = clientFormat.mBytesPerFrame
 
         status = AudioUnitSetProperty(audioUnit!, kAudioUnitProperty_StreamFormat,
-                                      kAudioUnitScope_Output, elementInput, &clientFormat, formatSize)
+                                      kAudioUnitScope_Output, inputElement, &clientFormat, formatSize)
         guard status == noErr else {
+            cleanup()
             throw RecorderError.streamFormatError
         }
 
-        // Set the client format on the ExtAudioFile too
         ExtAudioFileSetProperty(outputFile!, kExtAudioFileProperty_ClientDataFormat,
                                 UInt32(MemoryLayout<AudioStreamBasicDescription>.size), &clientFormat)
 
@@ -302,35 +369,28 @@ final class AudioRecorder: NSObject {
                              kAudioUnitScope_Global, 0, &callbackStruct,
                              UInt32(MemoryLayout<AURenderCallbackStruct>.size))
 
-        // Initialize and start
         status = AudioUnitInitialize(audioUnit!)
         guard status == noErr else {
+            cleanup()
             throw RecorderError.audioUnitInitFailed(status)
         }
 
         status = AudioOutputUnitStart(audioUnit!)
         guard status == noErr else {
+            cleanup()
             throw RecorderError.audioUnitStartFailed(status)
         }
 
         isRecording = true
         onStateChange?(true)
-
-        print("[SystemAudioRecorder] Recording started → \(fileURL?.path ?? "unknown")")
+        print("[SystemAudioRecorder] ● Recording → \(fileURL!.path)")
     }
 
     func stop() {
         guard isRecording, let au = audioUnit else { return }
 
         AudioOutputUnitStop(au)
-        AudioUnitUninitialize(au)
-        AudioComponentInstanceDispose(au)
-        audioUnit = nil
-
-        if let file = outputFile {
-            ExtAudioFileDispose(file)
-            outputFile = nil
-        }
+        cleanup()
 
         isRecording = false
         onStateChange?(false)
@@ -338,18 +398,22 @@ final class AudioRecorder: NSObject {
         if let url = fileURL {
             let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
             let size = (attrs?[.size] as? Int64) ?? 0
-            print("[SystemAudioRecorder] Recording stopped — \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) → \(url.path)")
+            print("[SystemAudioRecorder] ■ Stopped — \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) → \(url.path)")
             // Reveal in Finder
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
     }
 
-    func setOutputDirectory(_ url: URL) {
-        outputDir = url
-        try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-    }
+    private func cleanup() {
+        AudioUnitUninitialize(audioUnit!)
+        AudioComponentInstanceDispose(audioUnit!)
+        audioUnit = nil
 
-    var recording: Bool { isRecording }
+        if let file = outputFile {
+            ExtAudioFileDispose(file)
+            outputFile = nil
+        }
+    }
 
     // MARK: - Render Callback
 
@@ -364,7 +428,6 @@ final class AudioRecorder: NSObject {
         let recorder = Unmanaged<AudioRecorder>.fromOpaque(inRefCon).takeUnretainedValue()
         guard let file = recorder.outputFile, let au = recorder.audioUnit else { return noErr }
 
-        // Allocate buffer for audio data using the actual byte size
         let bufferByteSize = Int(inNumberFrames) * Int(recorder.bytesPerFrame)
         var audioData = [UInt8](repeating: 0, count: bufferByteSize)
 
@@ -376,17 +439,10 @@ final class AudioRecorder: NSObject {
         var bufferList = AudioBufferList(mNumberBuffers: 1, mBuffers: (buffer))
 
         var status = AudioUnitRender(au, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, &bufferList)
-        guard status == noErr else {
-            print("[SystemAudioRecorder] AudioUnitRender error: \(status)")
-            return status
-        }
+        guard status == noErr else { return status }
 
-        // Synchronous write — avoids use-after-free of the stack buffer
         status = ExtAudioFileWrite(file, inNumberFrames, &bufferList)
-        if status != noErr {
-            print("[SystemAudioRecorder] ExtAudioFileWrite error: \(status)")
-        }
-        return noErr
+        return status
     }
 }
 
@@ -399,93 +455,11 @@ enum RecorderError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .fileCreationFailed:
-            return "Could not create output audio file."
-        case .audioUnitCreationFailed:
-            return "Could not create audio capture unit."
-        case .streamFormatError:
-            return "Could not configure audio stream format."
-        case .audioUnitInitFailed(let s):
-            return "Audio unit initialization failed (error \(s))."
-        case .audioUnitStartFailed(let s):
-            return "Audio unit start failed (error \(s))."
-        }
-    }
-}
-
-// ─── Settings Window ─────────────────────────────────────────────────────
-
-final class SettingsWindowController: NSWindowController {
-    private var directoryLabel: NSTextField!
-    var outputDirectory: URL {
-        didSet {
-            directoryLabel?.stringValue = outputDirectory.path
-        }
-    }
-    var onDirectoryChange: ((URL) -> Void)?
-
-    init(directory: URL) {
-        self.outputDirectory = directory
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 200),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "System Audio Recorder Settings"
-        window.center()
-        super.init(window: window)
-        buildUI()
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    private func buildUI() {
-        guard let contentView = window?.contentView else { return }
-
-        let titleLabel = NSTextField(labelWithString: "Output Folder")
-        titleLabel.font = NSFont.boldSystemFont(ofSize: 12)
-        titleLabel.frame = NSRect(x: 20, y: 150, width: 100, height: 16)
-        contentView.addSubview(titleLabel)
-
-        directoryLabel = NSTextField(labelWithString: outputDirectory.path)
-        directoryLabel.frame = NSRect(x: 20, y: 120, width: 340, height: 20)
-        directoryLabel.lineBreakMode = .byTruncatingMiddle
-        contentView.addSubview(directoryLabel)
-
-        let chooseBtn = NSButton(title: "Choose…", target: self, action: #selector(chooseFolder))
-        chooseBtn.frame = NSRect(x: 370, y: 117, width: 80, height: 24)
-        chooseBtn.bezelStyle = .rounded
-        contentView.addSubview(chooseBtn)
-
-        let noteLabel = NSTextField(labelWithString: """
-        To record system audio, install BlackHole (free, open-source):
-        https://github.com/ExistentialAudio/BlackHole
-
-        Then set up a Multi-Output Device in Audio MIDI Setup:
-        Open Audio MIDI Setup → '+' → Create Multi-Output Device →
-        check both BlackHole and your speakers.
-
-        Set the Multi-Output Device as your system output to hear audio
-        while recording.
-        """)
-        noteLabel.frame = NSRect(x: 20, y: 10, width: 420, height: 95)
-        noteLabel.font = NSFont.systemFont(ofSize: 10)
-        noteLabel.textColor = .secondaryLabelColor
-        noteLabel.maximumNumberOfLines = 0
-        contentView.addSubview(noteLabel)
-    }
-
-    @objc private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.prompt = "Select Output Folder"
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url, let self = self else { return }
-            self.outputDirectory = url
-            self.onDirectoryChange?(url)
+        case .fileCreationFailed: return "Could not create output audio file. Check folder permissions."
+        case .audioUnitCreationFailed: return "Could not create audio capture unit."
+        case .streamFormatError: return "Could not configure audio stream format."
+        case .audioUnitInitFailed(let s): return "Audio unit init failed (error \(s))."
+        case .audioUnitStartFailed(let s): return "Audio unit start failed (error \(s))."
         }
     }
 }
@@ -493,95 +467,31 @@ final class SettingsWindowController: NSWindowController {
 // ─── App Delegate ────────────────────────────────────────────────────────
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let statusBar = StatusBarController()
-    private let recorder = AudioRecorder()
-    private var settingsWC: SettingsWindowController?
+    private var mainWC: MainWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusBar.setup(delegate: self)
-        recorder.onStateChange = { [weak self] recording in
-            DispatchQueue.main.async {
-                self?.statusBar.setRecordingState(recording)
-            }
-        }
-        recorder.onError = { [weak self] msg in
-            DispatchQueue.main.async {
-                self?.showAlert(message: msg)
-            }
-        }
-
-        // Check for BlackHole at launch
-        if AudioDeviceFinder.findBlackHole() == nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.showBlackHoleMissing()
-            }
-        }
-    }
-
-    func startRecording() {
-        guard let deviceID = AudioDeviceFinder.findBlackHole() else {
-            showBlackHoleMissing()
-            return
-        }
-        do {
-            try recorder.start(deviceID: deviceID)
-        } catch {
-            showAlert(message: error.localizedDescription)
-        }
-    }
-
-    func stopRecording() {
-        recorder.stop()
-    }
-
-    func showSettings() {
-        if settingsWC == nil {
-            settingsWC = SettingsWindowController(directory: recorder.outputDirectory)
-            settingsWC?.onDirectoryChange = { [weak self] url in
-                self?.recorder.setOutputDirectory(url)
-            }
-        }
-        settingsWC?.outputDirectory = recorder.outputDirectory
-        settingsWC?.showWindow(nil)
-        settingsWC?.window?.makeKeyAndOrderFront(nil)
+        mainWC = MainWindowController()
+        mainWC?.showWindow(nil)
+        mainWC?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
 
-    private func showBlackHoleMissing() {
-        let alert = NSAlert()
-        alert.messageText = "BlackHole Not Found"
-        alert.informativeText = """
-        System audio recording requires BlackHole, a free open-source virtual audio driver.
-
-        1. Download BlackHole from github.com/ExistentialAudio/BlackHole
-        2. Install it (requires restarting your Mac)
-        3. Open Audio MIDI Setup → '+' → Create Multi-Output Device
-        4. Check both BlackHole and your speakers
-        5. Set the Multi-Output Device as your system output
-
-        Without this, only your microphone can be recorded.
-        """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Open BlackHole Download Page")
-        alert.addButton(withTitle: "OK")
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(URL(string: "https://github.com/ExistentialAudio/BlackHole/releases")!)
+        // Check for BlackHole on launch
+        if AudioDeviceFinder.findBlackHole() == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.mainWC?.window?.makeKeyAndOrderFront(nil)
+            }
         }
     }
 
-    private func showAlert(message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Error"
-        alert.informativeText = message
-        alert.alertStyle = .critical
-        alert.runModal()
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return true
     }
 }
 
 // ─── Entry Point ─────────────────────────────────────────────────────────
 
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory)  // No dock icon — menu bar only
+app.setActivationPolicy(.regular) // Show in Dock
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
