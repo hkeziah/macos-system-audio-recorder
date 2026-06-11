@@ -78,10 +78,14 @@ ICON_DIR="$BUILD_DIR/icon_tmp"
 mkdir -p "$ICON_DIR"
 
 if [ -f "$ICON_SRC" ]; then
+    # Ensure source is proper PNG (handles JPEG-renamed-to-.png)
+    echo "  Source: $(file -b "$ICON_SRC")"
+    PNGSRC="$ICON_DIR/source.png"
+    sips -s format png "$ICON_SRC" --out "$PNGSRC" &>/dev/null && ICON_SRC="$PNGSRC" || true
+
     ICONSET="$ICON_DIR/icon.iconset"
     mkdir -p "$ICONSET"
 
-    # Generate all required sizes from the 1024x1024 source
     if command -v sips &>/dev/null; then
         sips -z 16   16   "$ICON_SRC" --out "$ICONSET/icon_16x16.png"       &>/dev/null || true
         sips -z 32   32   "$ICON_SRC" --out "$ICONSET/icon_16x16@2x.png"    &>/dev/null || true
@@ -94,8 +98,13 @@ if [ -f "$ICON_SRC" ]; then
         sips -z 512  512  "$ICON_SRC" --out "$ICONSET/icon_512x512.png"     &>/dev/null || true
         sips -z 1024 1024 "$ICON_SRC" --out "$ICONSET/icon_512x512@2x.png"  &>/dev/null || true
 
-        iconutil -c icns "$ICONSET" -o "$BUILD_DIR/$BUNDLE_DIR/Contents/Resources/AppIcon.icns" 2>/dev/null || true
-        echo "  Icon created."
+        ICNS_PATH="$BUILD_DIR/$BUNDLE_DIR/Contents/Resources/AppIcon.icns"
+        iconutil -c icns "$ICONSET" -o "$ICNS_PATH"
+        if [ -s "$ICNS_PATH" ]; then
+            echo "  Icon created ($(wc -c < "$ICNS_PATH") bytes)"
+        else
+            echo "  WARNING: iconutil produced empty file"
+        fi
     else
         echo "  sips not available — skipping icon"
     fi
