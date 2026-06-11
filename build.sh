@@ -69,59 +69,36 @@ cat > "$BUILD_DIR/$BUNDLE_DIR/Contents/Info.plist" << 'PLIST'
 </plist>
 PLIST
 
-# Simple icon
+# Icon — use pre-made AppIcon.png, generate .icns
+echo "==> Generating app icon…"
+ICON_SRC="$SRC_DIR/AppIcon.png"
 ICON_DIR="$BUILD_DIR/icon_tmp"
 mkdir -p "$ICON_DIR"
-export ICON_DIR
 
-python3 << 'PYEOF'
-import struct, zlib, os
+if [ -f "$ICON_SRC" ]; then
+    ICONSET="$ICON_DIR/icon.iconset"
+    mkdir -p "$ICONSET"
 
-def create_png(width, height, filename):
-    def chunk(ct, data):
-        c = ct + data
-        return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+    # Generate all required sizes from the 1024x1024 source
+    if command -v sips &>/dev/null; then
+        sips -z 16   16   "$ICON_SRC" --out "$ICONSET/icon_16x16.png"       &>/dev/null || true
+        sips -z 32   32   "$ICON_SRC" --out "$ICONSET/icon_16x16@2x.png"    &>/dev/null || true
+        sips -z 32   32   "$ICON_SRC" --out "$ICONSET/icon_32x32.png"       &>/dev/null || true
+        sips -z 64   64   "$ICON_SRC" --out "$ICONSET/icon_32x32@2x.png"    &>/dev/null || true
+        sips -z 128  128  "$ICON_SRC" --out "$ICONSET/icon_128x128.png"     &>/dev/null || true
+        sips -z 256  256  "$ICON_SRC" --out "$ICONSET/icon_128x128@2x.png"  &>/dev/null || true
+        sips -z 256  256  "$ICON_SRC" --out "$ICONSET/icon_256x256.png"     &>/dev/null || true
+        sips -z 512  512  "$ICON_SRC" --out "$ICONSET/icon_256x256@2x.png"  &>/dev/null || true
+        sips -z 512  512  "$ICON_SRC" --out "$ICONSET/icon_512x512.png"     &>/dev/null || true
+        sips -z 1024 1024 "$ICON_SRC" --out "$ICONSET/icon_512x512@2x.png"  &>/dev/null || true
 
-    header = b'\x89PNG\r\n\x1a\n'
-    ihdr = chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
-
-    raw_rows = b''
-    cx, cy, r = width // 2, height // 2, width // 2 - 20
-    for y in range(height):
-        raw_rows += b'\x00'
-        for x in range(width):
-            dx = (x - cx) / r
-            dy = (y - cy) / r
-            dist = (dx*dx + dy*dy) ** 0.5
-            if dist < 0.85:
-                # Red tinted center
-                val = int(min(1.0, (1.0 - dist) * 1.5) * 255)
-                raw_rows += struct.pack('BBBB', val, int(val * 0.3), int(val * 0.3), val)
-            elif dist < 1.0:
-                alpha = (1.0 - dist) / 0.15
-                val = int(max(0, alpha * 255))
-                raw_rows += struct.pack('BBBB', val, int(val * 0.3), int(val * 0.3), val)
-            else:
-                raw_rows += struct.pack('BBBB', 0, 0, 0, 0)
-
-    idat = chunk(b'IDAT', zlib.compress(raw_rows))
-    iend = chunk(b'IEND', b'')
-
-    with open(filename, 'wb') as f:
-        f.write(header + ihdr + idat + iend)
-
-out = os.path.join(os.environ.get('ICON_DIR', '/tmp/icon_tmp'), 'icon_512.png')
-create_png(512, 512, out)
-PYEOF
-
-ICONSET="$ICON_DIR/icon.iconset"
-mkdir -p "$ICONSET"
-if command -v sips &>/dev/null; then
-    for size in 16 32 64 128 256 512; do
-        sips -z $size $size "$ICON_DIR/icon_512.png" --out "$ICONSET/icon_${size}x${size}.png" &>/dev/null || true
-        sips -z $((size*2)) $((size*2)) "$ICON_DIR/icon_512.png" --out "$ICONSET/icon_${size}x${size}@2x.png" &>/dev/null || true
-    done
-    iconutil -c icns "$ICONSET" -o "$BUILD_DIR/$BUNDLE_DIR/Contents/Resources/AppIcon.icns" 2>/dev/null || true
+        iconutil -c icns "$ICONSET" -o "$BUILD_DIR/$BUNDLE_DIR/Contents/Resources/AppIcon.icns" 2>/dev/null || true
+        echo "  Icon created."
+    else
+        echo "  sips not available — skipping icon"
+    fi
+else
+    echo "  No AppIcon.png found — skipping icon"
 fi
 rm -rf "$ICON_DIR"
 
