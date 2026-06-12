@@ -17,10 +17,11 @@ final class MainWindowController: NSWindowController {
     private var silenceLabel: NSTextField!
     private var transcribeToggle: NSButton!
     private var transcribeLabel: NSTextField!
+    private var titleField: NSTextField!
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 330),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 370),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -42,7 +43,7 @@ final class MainWindowController: NSWindowController {
         let titleLabel = NSTextField(labelWithString: "System Audio Record and Transcribe")
         titleLabel.font = NSFont.boldSystemFont(ofSize: 18)
         titleLabel.alignment = .center
-        titleLabel.frame = NSRect(x: 20, y: 288, width: 380, height: 24)
+        titleLabel.frame = NSRect(x: 20, y: 328, width: 380, height: 24)
         contentView.addSubview(titleLabel)
 
         // ── Status indicator ──
@@ -50,19 +51,32 @@ final class MainWindowController: NSWindowController {
         statusLabel.font = NSFont.systemFont(ofSize: 13)
         statusLabel.alignment = .center
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.frame = NSRect(x: 20, y: 266, width: 380, height: 18)
+        statusLabel.frame = NSRect(x: 20, y: 306, width: 380, height: 18)
         contentView.addSubview(statusLabel)
 
-        // ── Transcription toggle (above the record button) ──
+        // ── File title field ──
+        let titleFieldLabel = NSTextField(labelWithString: "File Title (optional)")
+        titleFieldLabel.font = NSFont.systemFont(ofSize: 10)
+        titleFieldLabel.textColor = .secondaryLabelColor
+        titleFieldLabel.frame = NSRect(x: 80, y: 280, width: 120, height: 14)
+        contentView.addSubview(titleFieldLabel)
+
+        titleField = NSTextField(frame: NSRect(x: 80, y: 258, width: 260, height: 22))
+        titleField.placeholderString = "e.g. meeting-notes"
+        titleField.font = NSFont.systemFont(ofSize: 12)
+        titleField.bezelStyle = .roundedBezel
+        contentView.addSubview(titleField)
+
+        // ── Transcription toggle ──
         transcribeToggle = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleTranscription))
-        transcribeToggle.frame = NSRect(x: 80, y: 232, width: 20, height: 20)
+        transcribeToggle.frame = NSRect(x: 80, y: 228, width: 20, height: 20)
         transcribeToggle.state = .on
         contentView.addSubview(transcribeToggle)
 
         transcribeLabel = NSTextField(labelWithString: "Transcribe to markdown when recording stops")
         transcribeLabel.font = NSFont.systemFont(ofSize: 10)
         transcribeLabel.textColor = .secondaryLabelColor
-        transcribeLabel.frame = NSRect(x: 104, y: 234, width: 270, height: 16)
+        transcribeLabel.frame = NSRect(x: 104, y: 230, width: 270, height: 16)
         contentView.addSubview(transcribeLabel)
 
         // ── Record Button ──
@@ -205,6 +219,7 @@ final class MainWindowController: NSWindowController {
                 return
             }
             do {
+                recorder.customFilename = titleField.stringValue
                 try recorder.start(deviceID: deviceID)
             } catch {
                 showError(error.localizedDescription)
@@ -352,7 +367,7 @@ final class AudioRecorder: NSObject {
     private var bytesPerFrame: UInt32 = 4
     private var sampleRate: Float64 = 44100
     private var silentFrames: Int64 = 0
-    let maxSilentSeconds: Float64 = 60.0
+    let maxSilentSeconds: Float64 = 20.0
     private let silenceThreshold: Float = 0.001   // Peak below this = silence (-60dB)
 
     let outputDirectory: URL = {
@@ -370,14 +385,20 @@ final class AudioRecorder: NSObject {
     }
     var recording: Bool { isRecording }
     var lastRecordedFileURL: URL? { fileURL }
+    var customFilename: String?
 
     func start(deviceID: AudioDeviceID) throws {
         guard !isRecording else { return }
 
         // ── Create output file ──
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let filename = "SystemAudio_\(formatter.string(from: Date())).wav"
+        let filename: String
+        if let custom = customFilename, !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            filename = custom + ".wav"
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            filename = "SystemAudio_\(formatter.string(from: Date())).wav"
+        }
         fileURL = outputDirectory.appendingPathComponent(filename)
 
         var fileFormat = AudioStreamBasicDescription(
