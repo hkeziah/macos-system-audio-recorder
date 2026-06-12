@@ -620,6 +620,27 @@ enum RecorderError: LocalizedError {
 
 // ─── Transcriber ──────────────────────────────────────────────────────────
 
+// Anthropic API models for transcript formatting
+private struct AnthropicMessage: Codable {
+    let role: String
+    let content: String
+}
+
+private struct AnthropicRequest: Encodable {
+    let model: String
+    let max_tokens: Int
+    let system: String
+    let messages: [AnthropicMessage]
+}
+
+private struct AnthropicResponse: Decodable {
+    struct ContentBlock: Decodable {
+        let type: String
+        let text: String
+    }
+    let content: [ContentBlock]
+}
+
 final class Transcriber {
     /// Transcribes a WAV file to markdown using whisper.cpp (local, fast, offline).
     static func transcribe(_ audioURL: URL, title: String? = nil, completion: @escaping (Result<URL, Error>) -> Void) {
@@ -678,18 +699,19 @@ final class Transcriber {
                 // Clean up the .txt file
                 try? FileManager.default.removeItem(atPath: txtPath)
 
-                // Write raw transcript to markdown
+                // Format transcript for readability
                 let mdURL = audioURL.deletingPathExtension().appendingPathExtension("md")
                 let formatter = DateFormatter()
                 formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
                 let timestamp = formatter.string(from: Date())
                 let heading = title ?? audioURL.deletingPathExtension().lastPathComponent
+                let formatted = formatTranscript(transcript.trimmingCharacters(in: .whitespacesAndNewlines))
 
                 let md = """
                 # \(heading)
                 **Recorded:** \(timestamp)
 
-                \(transcript.trimmingCharacters(in: .whitespacesAndNewlines))
+                \(formatted)
                 """
 
                 try md.write(to: mdURL, atomically: true, encoding: .utf8)
@@ -699,6 +721,274 @@ final class Transcriber {
                 completion(.failure(error))
             }
         }
+    }
+
+    /// Formats raw transcript via Anthropic API; falls back to simple paragraph merging on failure.
+    private static func formatTranscript(_ raw: String) -> String {
+        // Try Anthropic first
+        if let key = loadAnthropicKey() {
+            if let formatted = formatWithAnthropic(raw: raw, apiKey: key) {
+                return formatted
+            }
+        }
+        // Fallback: simple sentence/paragraph grouping
+        return simpleFormat(raw)
+    }
+
+    private static func loadAnthropicKey() -> String? {
+        // Check environment variable first, then config file
+        if let env = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"], !env.isEmpty {
+            return env
+        }
+        let keyPath = NSHomeDirectory() + "/.anthropic_key"
+        if let key = try? String(contentsOfFile: keyPath, encoding: .utf8) {
+            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    private static func formatWithAnthropic(raw: String, apiKey: String) -> String? {
+        let systemPrompt = """
+        # Reformat Document for Readability
+
+        Your task is to reformat the provided document into a clean, professional, highly readable Markdown document.
+
+        ## Critical Requirements
+
+        1. Preserve ALL original text.
+           - Do not add information.
+           - Do not remove information.
+           - Do not summarize.
+           - Do not paraphrase.
+           - Do not rewrite wording.
+           - Every word from the original document must remain present.
+
+        2. You MAY:
+           - Add headings.
+           - Add subheadings.
+           - Add paragraph breaks.
+           - Add bullet lists.
+           - Add numbered lists.
+           - Add blockquotes.
+           - Add horizontal rules.
+           - Add emphasis (bold/italic) when it improves readability.
+           - Add tables if the content naturally fits a table.
+
+        3. You MUST NOT:
+           - Change factual content.
+           - Correct grammar.
+           - Fix spelling.
+           - Alter wording.
+           - Condense content.
+           - Expand content.
+           - Interpret content.
+           - Insert commentary.
+
+        4. Preserve all examples, quotations, URLs, names, numbers, dates, and timestamps exactly as written.
+
+        ## Reformatting Rules
+
+        ### Document Title
+
+        Create a clear top-level heading using the document title.
+
+        ### Metadata
+
+        Move metadata (author, source, recording date, timestamps, etc.) into a dedicated section near the top.
+
+        Example:
+
+        # Document Title
+
+        ## Metadata
+
+        - Author:
+        - Source:
+        - Recorded:
+        - Duration:
+
+        ---
+
+        ### Structure Detection
+
+        Identify natural topic changes and create sections.
+
+        Use headings such as:
+
+        ## Introduction
+
+        ## Why This Matters
+
+        ## Step 1
+
+        ## Demonstration
+
+        ## Pricing
+
+        ## Sales Strategy
+
+        ## Examples
+
+        ## Conclusion
+
+        Only use headings that reflect the actual content.
+
+        ### Paragraphs
+
+        Convert long walls of text into logical paragraphs.
+
+        General guideline:
+
+        - One idea per paragraph.
+        - Paragraphs should rarely exceed 5-8 sentences.
+
+        ### Transcript Cleanup Rule
+
+        When transcript text contains arbitrary line breaks, broken sentences, OCR artifacts, or speech-to-text formatting issues:
+
+        - Merge lines into complete paragraphs.
+        - Preserve every word exactly.
+        - Only repair formatting boundaries.
+        - Do not alter sentence wording.
+        - Do not attempt to improve grammar.
+
+        ### Lists
+
+        Convert obvious lists into Markdown lists.
+
+        Example:
+
+        Instead of:
+
+        New listing alerts, price reductions, showing confirmations, missed appointments.
+
+        Use:
+
+        - New listing alerts
+        - Price reductions
+        - Showing confirmations
+        - Missed appointments
+
+        ### Processes
+
+        Convert procedures into numbered steps.
+
+        Example:
+
+        1. Clone the voice.
+        2. Generate scripts.
+        3. Translate scripts.
+        4. Generate recordings.
+        5. Deliver files.
+
+        ### Speaker Flow
+
+        If the document is a transcript:
+
+        - Preserve speaker wording exactly.
+        - Add spacing between major thoughts.
+        - Create sections that follow the flow of the presentation.
+
+        ### Readability
+
+        Optimize for a human reader.
+
+        The finished document should feel like a professionally edited article while still containing exactly the same words as the source.
+
+        ## Verification
+
+        Before outputting:
+
+        - Verify no content was removed.
+        - Verify no content was added.
+        - Verify no wording was changed.
+        - Verify only formatting was modified.
+
+        ## Output
+
+        Return only the reformatted Markdown content. Do not include any commentary, preamble, or explanation before or after the document.
+        """
+
+        let body = AnthropicRequest(
+            model: "claude-sonnet-4-6",
+            max_tokens: 8192,
+            system: systemPrompt,
+            messages: [
+                AnthropicMessage(role: "user", content: raw)
+            ]
+        )
+
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages"),
+              let jsonData = try? JSONEncoder().encode(body) else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.httpBody = jsonData
+        request.timeoutInterval = 120
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: String?
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            guard let data = data, error == nil,
+                  let httpResp = response as? HTTPURLResponse,
+                  (200...299).contains(httpResp.statusCode),
+                  let decoded = try? JSONDecoder().decode(AnthropicResponse.self, from: data),
+                  let text = decoded.content.first?.text,
+                  !text.isEmpty else { return }
+            result = text
+        }.resume()
+
+        semaphore.wait()
+        return result
+    }
+
+    /// Simple fallback formatter: merges hard-wrapped lines into flowing paragraphs.
+    private static func simpleFormat(_ raw: String) -> String {
+        // Join all lines with spaces, collapsing multiple spaces
+        let joined = raw
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        // Split into sentences on period/exclamation/question + space or end
+        var sentences: [String] = []
+        var current = ""
+        for char in joined {
+            current.append(char)
+            if char == "." || char == "!" || char == "?" {
+                sentences.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            }
+        }
+        let remainder = current.trimmingCharacters(in: .whitespaces)
+        if !remainder.isEmpty {
+            sentences.append(remainder)
+        }
+
+        // Group sentences into paragraphs (4-5 sentences per paragraph)
+        var paragraphs: [String] = []
+        var para: [String] = []
+        for sentence in sentences {
+            para.append(sentence)
+            if para.count >= 4 {
+                paragraphs.append(para.joined(separator: " "))
+                para = []
+            }
+        }
+        if !para.isEmpty {
+            paragraphs.append(para.joined(separator: " "))
+        }
+
+        return paragraphs.joined(separator: "\n\n")
     }
 
     private static func findBrewBinary(_ name: String) -> String? {
