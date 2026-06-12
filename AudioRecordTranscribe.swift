@@ -620,6 +620,21 @@ enum RecorderError: LocalizedError {
 
 // ─── Transcriber ──────────────────────────────────────────────────────────
 
+// DeepSeek API models for transcript formatting
+private struct DSApiMessage: Codable {
+    let role: String
+    let content: String
+}
+private struct DSApiRequest: Encodable {
+    let model: String
+    let messages: [DSApiMessage]
+    let temperature: Double
+}
+private struct DSApiResponse: Decodable {
+    struct Choice: Decodable { let message: DSApiMessage }
+    let choices: [Choice]
+}
+
 final class Transcriber {
     /// Transcribes a WAV file to markdown using whisper.cpp (local, fast, offline).
     static func transcribe(_ audioURL: URL, title: String? = nil, completion: @escaping (Result<URL, Error>) -> Void) {
@@ -704,8 +719,101 @@ final class Transcriber {
         }
     }
 
-    /// Merges whisper.cpp's hard-wrapped lines into flowing paragraphs for readability.
+    /// Formats raw transcript via DeepSeek API; falls back to simple formatting on failure.
     private static func formatTranscript(_ raw: String) -> String {
+        // Try DeepSeek first
+        if let key = loadDeepSeekKey() {
+            if let formatted = formatWithDeepSeek(raw: raw, apiKey: key) {
+                return formatted
+            }
+        }
+        // Fallback: simple sentence/paragraph grouping
+        return simpleFormat(raw)
+    }
+
+    private static func loadDeepSeekKey() -> String? {
+        // Check environment variable first, then config file
+        if let env = ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"], !env.isEmpty {
+            return env
+        }
+        let keyPath = NSHomeDirectory() + "/.deepseek_key"
+        if let key = try? String(contentsOfFile: keyPath, encoding: .utf8) {
+            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    private static func formatWithDeepSeek(raw: String, apiKey: String) -> String? {
+        let systemPrompt = """
+        # Reformat Document for Readability
+
+        Your task is to reformat the attached document into a clean, professional, highly readable Markdown document.
+
+        ## Critical Requirements
+
+        1. Preserve ALL original text.
+           - Do not add information.
+           - Do not remove information.
+           - Do not summarize.
+           - Do not paraphrase.
+           - Do not rewrite wording.
+
+        2. You MAY:
+           - Add headings, subheadings, paragraph breaks.
+           - Add bullet lists, numbered lists, blockquotes.
+           - Add emphasis (bold/italic) when it improves readability.
+
+        3. You MUST NOT:
+           - Correct grammar, fix spelling, alter wording.
+           - Condense or expand content.
+           - Interpret content or insert commentary.
+
+        4. Preserve all examples, quotations, URLs, names, numbers, dates, timestamps exactly.
+
+        ## Output Format
+
+        Return ONLY the formatted Markdown. No preamble, no explanation.
+        """
+
+        let messages = [
+            DSApiMessage(role: "system", content: systemPrompt),
+            DSApiMessage(role: "user", content: raw)
+        ]
+        let body = DSApiRequest(model: "deepseek-v4-flash", messages: messages, temperature: 0.1)
+
+        guard let url = URL(string: "https://api.deepseek.com/chat/completions"),
+              let jsonData = try? JSONEncoder().encode(body) else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = jsonData
+        request.timeoutInterval = 120
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: String?
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            guard let data = data, error == nil,
+                  let httpResp = response as? HTTPURLResponse,
+                  (200...299).contains(httpResp.statusCode),
+                  let decoded = try? JSONDecoder().decode(DSApiResponse.self, from: data),
+                  let content = decoded.choices.first?.message.content,
+                  !content.isEmpty else { return }
+            result = content
+        }.resume()
+
+        semaphore.wait()
+        return result
+    }
+
+    /// Simple fallback formatter: merges hard-wrapped lines into flowing paragraphs.
+    private static func simpleFormat(_ raw: String) -> String {
         // Join all lines with spaces, collapsing multiple spaces
         let joined = raw
             .components(separatedBy: .newlines)
