@@ -65,6 +65,8 @@ final class MainWindowController: NSWindowController {
         titleField.placeholderString = "e.g. meeting-notes"
         titleField.font = NSFont.systemFont(ofSize: 12)
         titleField.bezelStyle = .roundedBezel
+        titleField.isEditable = true
+        titleField.isSelectable = true
         contentView.addSubview(titleField)
 
         // ── Transcription toggle ──
@@ -250,9 +252,10 @@ final class MainWindowController: NSWindowController {
     }
 
     private func transcribe(_ audioURL: URL) {
+        let customTitle = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         statusLabel.stringValue = "Transcribing…"
         statusLabel.textColor = .systemOrange
-        Transcriber.transcribe(audioURL) { [weak self] result in
+        Transcriber.transcribe(audioURL, title: customTitle.isEmpty ? nil : customTitle) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let mdURL):
@@ -619,7 +622,7 @@ enum RecorderError: LocalizedError {
 
 final class Transcriber {
     /// Transcribes a WAV file to markdown using whisper.cpp (local, fast, offline).
-    static func transcribe(_ audioURL: URL, completion: @escaping (Result<URL, Error>) -> Void) {
+    static func transcribe(_ audioURL: URL, title: String? = nil, completion: @escaping (Result<URL, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             // Find whisper-cli binary
             let whisperBin: String
@@ -680,10 +683,10 @@ final class Transcriber {
                 let formatter = DateFormatter()
                 formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
                 let timestamp = formatter.string(from: Date())
-                let sourceName = audioURL.deletingPathExtension().lastPathComponent
+                let heading = title ?? audioURL.deletingPathExtension().lastPathComponent
 
                 let md = """
-                # Transcription: \(sourceName)
+                # \(heading)
                 **Recorded:** \(timestamp)
 
                 \(transcript.trimmingCharacters(in: .whitespacesAndNewlines))
