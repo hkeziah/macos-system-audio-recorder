@@ -20,7 +20,7 @@ final class MainWindowController: NSWindowController {
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 310),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 330),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -42,7 +42,7 @@ final class MainWindowController: NSWindowController {
         let titleLabel = NSTextField(labelWithString: "System Audio Record and Transcribe")
         titleLabel.font = NSFont.boldSystemFont(ofSize: 18)
         titleLabel.alignment = .center
-        titleLabel.frame = NSRect(x: 20, y: 230, width: 380, height: 24)
+        titleLabel.frame = NSRect(x: 20, y: 288, width: 380, height: 24)
         contentView.addSubview(titleLabel)
 
         // ── Status indicator ──
@@ -50,40 +50,59 @@ final class MainWindowController: NSWindowController {
         statusLabel.font = NSFont.systemFont(ofSize: 13)
         statusLabel.alignment = .center
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.frame = NSRect(x: 20, y: 205, width: 380, height: 18)
+        statusLabel.frame = NSRect(x: 20, y: 266, width: 380, height: 18)
         contentView.addSubview(statusLabel)
+
+        // ── Transcription toggle (above the record button) ──
+        transcribeToggle = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleTranscription))
+        transcribeToggle.frame = NSRect(x: 80, y: 232, width: 20, height: 20)
+        transcribeToggle.state = .on
+        contentView.addSubview(transcribeToggle)
+
+        transcribeLabel = NSTextField(labelWithString: "Transcribe to markdown when recording stops")
+        transcribeLabel.font = NSFont.systemFont(ofSize: 10)
+        transcribeLabel.textColor = .secondaryLabelColor
+        transcribeLabel.frame = NSRect(x: 104, y: 234, width: 270, height: 16)
+        contentView.addSubview(transcribeLabel)
 
         // ── Record Button ──
         recordButton = NSButton(title: "Start Recording", target: self, action: #selector(toggleRecording))
-        recordButton.frame = NSRect(x: 110, y: 135, width: 200, height: 52)
+        recordButton.frame = NSRect(x: 110, y: 175, width: 200, height: 50)
         recordButton.bezelStyle = .rounded
         recordButton.font = NSFont.boldSystemFont(ofSize: 15)
         recordButton.keyEquivalent = "\r" // Enter key toggles
         contentView.addSubview(recordButton)
 
-        // ── Duration ──
+        // ── Show in Finder (tight below the record button) ──
+        let finderBtn = NSButton(title: "Show Recordings in Finder", target: self, action: #selector(showInFinder))
+        finderBtn.frame = NSRect(x: 130, y: 148, width: 160, height: 24)
+        finderBtn.bezelStyle = .rounded
+        finderBtn.font = NSFont.systemFont(ofSize: 11)
+        contentView.addSubview(finderBtn)
+
+        // ── Duration (visible during recording) ──
         durationLabel = NSTextField(labelWithString: "")
         durationLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .medium)
         durationLabel.alignment = .center
-        durationLabel.frame = NSRect(x: 20, y: 105, width: 380, height: 26)
+        durationLabel.frame = NSRect(x: 20, y: 118, width: 380, height: 26)
         durationLabel.isHidden = true
         contentView.addSubview(durationLabel)
 
-        // ── Audio level meter ──
+        // ── Audio level meter (visible during recording) ──
         levelLabel = NSTextField(labelWithString: "")
         levelLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         levelLabel.alignment = .center
         levelLabel.textColor = .tertiaryLabelColor
-        levelLabel.frame = NSRect(x: 20, y: 85, width: 380, height: 16)
+        levelLabel.frame = NSRect(x: 20, y: 98, width: 380, height: 16)
         levelLabel.isHidden = true
         contentView.addSubview(levelLabel)
 
-        // ── Silence countdown ──
+        // ── Silence countdown (visible during recording) ──
         silenceLabel = NSTextField(labelWithString: "")
         silenceLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         silenceLabel.alignment = .center
         silenceLabel.textColor = .secondaryLabelColor
-        silenceLabel.frame = NSRect(x: 20, y: 68, width: 380, height: 16)
+        silenceLabel.frame = NSRect(x: 20, y: 78, width: 380, height: 16)
         silenceLabel.isHidden = true
         contentView.addSubview(silenceLabel)
 
@@ -92,34 +111,15 @@ final class MainWindowController: NSWindowController {
         folderLabel.font = NSFont.systemFont(ofSize: 10)
         folderLabel.textColor = .tertiaryLabelColor
         folderLabel.alignment = .center
-        folderLabel.frame = NSRect(x: 20, y: 52, width: 380, height: 16)
+        folderLabel.frame = NSRect(x: 20, y: 54, width: 380, height: 16)
         contentView.addSubview(folderLabel)
-
-        // ── Show in Finder ──
-        let finderBtn = NSButton(title: "Show Recordings in Finder", target: self, action: #selector(showInFinder))
-        finderBtn.frame = NSRect(x: 130, y: 55, width: 160, height: 24)
-        finderBtn.bezelStyle = .rounded
-        finderBtn.font = NSFont.systemFont(ofSize: 11)
-        contentView.addSubview(finderBtn)
-
-        // ── Transcription toggle ──
-        transcribeToggle = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleTranscription))
-        transcribeToggle.frame = NSRect(x: 80, y: 28, width: 20, height: 20)
-        transcribeToggle.state = .off
-        contentView.addSubview(transcribeToggle)
-
-        transcribeLabel = NSTextField(labelWithString: "Transcribe to markdown when recording stops")
-        transcribeLabel.font = NSFont.systemFont(ofSize: 10)
-        transcribeLabel.textColor = .secondaryLabelColor
-        transcribeLabel.frame = NSRect(x: 104, y: 30, width: 270, height: 16)
-        contentView.addSubview(transcribeLabel)
 
         // ── Requirement note ──
         let noteLabel = NSTextField(labelWithString: "Requires BlackHole. Download: github.com/ExistentialAudio/BlackHole")
         noteLabel.font = NSFont.systemFont(ofSize: 9)
         noteLabel.textColor = .quaternaryLabelColor
         noteLabel.alignment = .center
-        noteLabel.frame = NSRect(x: 20, y: 8, width: 380, height: 14)
+        noteLabel.frame = NSRect(x: 20, y: 10, width: 380, height: 14)
         contentView.addSubview(noteLabel)
 
         // ── Set up callbacks ──
