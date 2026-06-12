@@ -620,21 +620,6 @@ enum RecorderError: LocalizedError {
 
 // ─── Transcriber ──────────────────────────────────────────────────────────
 
-// DeepSeek API models for transcript formatting
-private struct DSApiMessage: Codable {
-    let role: String
-    let content: String
-}
-private struct DSApiRequest: Encodable {
-    let model: String
-    let messages: [DSApiMessage]
-    let temperature: Double
-}
-private struct DSApiResponse: Decodable {
-    struct Choice: Decodable { let message: DSApiMessage }
-    let choices: [Choice]
-}
-
 final class Transcriber {
     /// Transcribes a WAV file to markdown using whisper.cpp (local, fast, offline).
     static func transcribe(_ audioURL: URL, title: String? = nil, completion: @escaping (Result<URL, Error>) -> Void) {
@@ -693,11 +678,7 @@ final class Transcriber {
                 // Clean up the .txt file
                 try? FileManager.default.removeItem(atPath: txtPath)
 
-                // Format the raw transcript into readable paragraphs
-                print("[Transcriber] Starting transcript formatting…")
-                let formatted = Self.formatTranscript(transcript)
-
-                // Write markdown
+                // Write raw transcript to markdown
                 let mdURL = audioURL.deletingPathExtension().appendingPathExtension("md")
                 let formatter = DateFormatter()
                 formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
@@ -708,7 +689,7 @@ final class Transcriber {
                 # \(heading)
                 **Recorded:** \(timestamp)
 
-                \(formatted)
+                \(transcript.trimmingCharacters(in: .whitespacesAndNewlines))
                 """
 
                 try md.write(to: mdURL, atomically: true, encoding: .utf8)
@@ -718,176 +699,6 @@ final class Transcriber {
                 completion(.failure(error))
             }
         }
-    }
-
-    /// Formats raw transcript via DeepSeek API; falls back to simple formatting on failure.
-    private static func formatTranscript(_ raw: String) -> String {
-        print("[Transcriber] Raw transcript: \(raw.count) chars")
-        // Try DeepSeek first
-        if let key = loadDeepSeekKey() {
-            print("[Transcriber] DeepSeek key found, calling API…")
-            if let formatted = formatWithDeepSeek(raw: raw, apiKey: key) {
-                print("[Transcriber] DeepSeek returned: \(formatted.count) chars")
-                return formatted
-            }
-            print("[Transcriber] DeepSeek call failed, using fallback")
-        } else {
-            print("[Transcriber] No DeepSeek key found, using fallback")
-        }
-        // Fallback: simple sentence/paragraph grouping
-        let fallback = simpleFormat(raw)
-        print("[Transcriber] Fallback formatted: \(fallback.count) chars")
-        return fallback
-    }
-
-    private static func loadDeepSeekKey() -> String? {
-        // Check environment variable first, then config file
-        if let env = ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"], !env.isEmpty {
-            return env
-        }
-        let keyPath = NSHomeDirectory() + "/.deepseek_key"
-        if let key = try? String(contentsOfFile: keyPath, encoding: .utf8) {
-            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { return trimmed }
-        }
-        return nil
-    }
-
-    private static func formatWithDeepSeek(raw: String, apiKey: String) -> String? {
-        let systemPrompt = """
-        # Reformat Document for Readability
-
-        Your task is to reformat the attached document into a clean, professional, highly readable Markdown document.
-
-        ## Critical Requirements
-
-        1. Preserve ALL original text.
-           - Do not add information.
-           - Do not remove information.
-           - Do not summarize.
-           - Do not paraphrase.
-           - Do not rewrite wording.
-
-        2. You MAY:
-           - Add headings, subheadings, paragraph breaks.
-           - Add bullet lists, numbered lists, blockquotes.
-           - Add emphasis (bold/italic) when it improves readability.
-
-        3. You MUST NOT:
-           - Correct grammar, fix spelling, alter wording.
-           - Condense or expand content.
-           - Interpret content or insert commentary.
-
-        4. Preserve all examples, quotations, URLs, names, numbers, dates, timestamps exactly.
-
-        ## Output Format
-
-        Return ONLY the formatted Markdown. No preamble, no explanation.
-        """
-
-        let messages = [
-            DSApiMessage(role: "system", content: systemPrompt),
-            DSApiMessage(role: "user", content: raw)
-        ]
-        let body = DSApiRequest(model: "deepseek-v4-flash", messages: messages, temperature: 0.1)
-
-        guard let url = URL(string: "https://api.deepseek.com/chat/completions"),
-              let jsonData = try? JSONEncoder().encode(body) else {
-            return nil
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = jsonData
-        request.timeoutInterval = 120
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: String?
-        var debugInfo = ""
-
-        print("[Transcriber] DeepSeek request: \(raw.count) chars input")
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-            if let error = error {
-                debugInfo = "network error: \(error.localizedDescription)"
-                print("[Transcriber] DeepSeek \(debugInfo)")
-                return
-            }
-            guard let data = data,
-                  let httpResp = response as? HTTPURLResponse else {
-                debugInfo = "invalid response"
-                print("[Transcriber] DeepSeek \(debugInfo)")
-                return
-            }
-            print("[Transcriber] DeepSeek HTTP \(httpResp.statusCode), body: \(data.count) bytes")
-            guard (200...299).contains(httpResp.statusCode) else {
-                if let body = String(data: data, encoding: .utf8) {
-                    debugInfo = "HTTP \(httpResp.statusCode): \(body.prefix(200))"
-                } else {
-                    debugInfo = "HTTP \(httpResp.statusCode)"
-                }
-                print("[Transcriber] DeepSeek \(debugInfo)")
-                return
-            }
-            guard let decoded = try? JSONDecoder().decode(DSApiResponse.self, from: data),
-                  let content = decoded.choices.first?.message.content,
-                  !content.isEmpty else {
-                debugInfo = "failed to decode response"
-                if let body = String(data: data, encoding: .utf8) {
-                    print("[Transcriber] DeepSeek decode failed. Body: \(body.prefix(300))")
-                } else {
-                    print("[Transcriber] DeepSeek decode failed")
-                }
-                return
-            }
-            result = content
-        }.resume()
-
-        semaphore.wait()
-        return result
-    }
-
-    /// Simple fallback formatter: merges hard-wrapped lines into flowing paragraphs.
-    private static func simpleFormat(_ raw: String) -> String {
-        // Join all lines with spaces, collapsing multiple spaces
-        let joined = raw
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-
-        // Split into sentences on period/exclamation/question + space or end
-        var sentences: [String] = []
-        var current = ""
-        for char in joined {
-            current.append(char)
-            if char == "." || char == "!" || char == "?" {
-                sentences.append(current.trimmingCharacters(in: .whitespaces))
-                current = ""
-            }
-        }
-        let remainder = current.trimmingCharacters(in: .whitespaces)
-        if !remainder.isEmpty {
-            sentences.append(remainder)
-        }
-
-        // Group sentences into paragraphs (4-5 sentences per paragraph)
-        var paragraphs: [String] = []
-        var para: [String] = []
-        for sentence in sentences {
-            para.append(sentence)
-            if para.count >= 4 {
-                paragraphs.append(para.joined(separator: " "))
-                para = []
-            }
-        }
-        if !para.isEmpty {
-            paragraphs.append(para.joined(separator: " "))
-        }
-
-        return paragraphs.joined(separator: "\n\n")
     }
 
     private static func findBrewBinary(_ name: String) -> String? {
