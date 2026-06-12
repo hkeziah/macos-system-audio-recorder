@@ -694,7 +694,7 @@ final class Transcriber {
                 try? FileManager.default.removeItem(atPath: txtPath)
 
                 // Format the raw transcript into readable paragraphs
-                NSLog("[Transcriber] Starting transcript formatting…")
+                print("[Transcriber] Starting transcript formatting…")
                 let formatted = Self.formatTranscript(transcript)
 
                 // Write markdown
@@ -722,21 +722,21 @@ final class Transcriber {
 
     /// Formats raw transcript via DeepSeek API; falls back to simple formatting on failure.
     private static func formatTranscript(_ raw: String) -> String {
-        NSLog("[Transcriber] Raw transcript: %d chars", raw.count)
+        print("[Transcriber] Raw transcript: \(raw.count) chars")
         // Try DeepSeek first
         if let key = loadDeepSeekKey() {
-            NSLog("[Transcriber] DeepSeek key found, calling API…")
+            print("[Transcriber] DeepSeek key found, calling API…")
             if let formatted = formatWithDeepSeek(raw: raw, apiKey: key) {
-                NSLog("[Transcriber] DeepSeek returned: %d chars", formatted.count)
+                print("[Transcriber] DeepSeek returned: \(formatted.count) chars")
                 return formatted
             }
-            NSLog("[Transcriber] DeepSeek call failed, using fallback")
+            print("[Transcriber] DeepSeek call failed, using fallback")
         } else {
-            NSLog("[Transcriber] No DeepSeek key found, using fallback")
+            print("[Transcriber] No DeepSeek key found, using fallback")
         }
         // Fallback: simple sentence/paragraph grouping
         let fallback = simpleFormat(raw)
-        NSLog("[Transcriber] Fallback formatted: %d chars", fallback.count)
+        print("[Transcriber] Fallback formatted: \(fallback.count) chars")
         return fallback
     }
 
@@ -807,28 +807,28 @@ final class Transcriber {
         var result: String?
         var debugInfo = ""
 
-        NSLog("[Transcriber] DeepSeek request: %d chars input", raw.count)
+        print("[Transcriber] DeepSeek request: \(raw.count) chars input")
         URLSession.shared.dataTask(with: request) { data, response, error in
             defer { semaphore.signal() }
             if let error = error {
                 debugInfo = "network error: \(error.localizedDescription)"
-                NSLog("[Transcriber] DeepSeek %@", debugInfo)
+                print("[Transcriber] DeepSeek \(debugInfo)")
                 return
             }
             guard let data = data,
                   let httpResp = response as? HTTPURLResponse else {
                 debugInfo = "invalid response"
-                NSLog("[Transcriber] DeepSeek %@", debugInfo)
+                print("[Transcriber] DeepSeek \(debugInfo)")
                 return
             }
-            NSLog("[Transcriber] DeepSeek HTTP %d, body: %d bytes", httpResp.statusCode, data.count)
+            print("[Transcriber] DeepSeek HTTP \(httpResp.statusCode), body: \(data.count) bytes")
             guard (200...299).contains(httpResp.statusCode) else {
                 if let body = String(data: data, encoding: .utf8) {
                     debugInfo = "HTTP \(httpResp.statusCode): \(body.prefix(200))"
                 } else {
                     debugInfo = "HTTP \(httpResp.statusCode)"
                 }
-                NSLog("[Transcriber] DeepSeek %@", debugInfo)
+                print("[Transcriber] DeepSeek \(debugInfo)")
                 return
             }
             guard let decoded = try? JSONDecoder().decode(DSApiResponse.self, from: data),
@@ -836,9 +836,9 @@ final class Transcriber {
                   !content.isEmpty else {
                 debugInfo = "failed to decode response"
                 if let body = String(data: data, encoding: .utf8) {
-                    NSLog("[Transcriber] DeepSeek decode failed. Body: %@", body.prefix(300))
+                    print("[Transcriber] DeepSeek decode failed. Body: \(body.prefix(300))")
                 } else {
-                    NSLog("[Transcriber] DeepSeek decode failed")
+                    print("[Transcriber] DeepSeek decode failed")
                 }
                 return
             }
