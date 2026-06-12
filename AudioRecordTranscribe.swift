@@ -258,10 +258,12 @@ final class MainWindowController: NSWindowController {
         Transcriber.transcribe(audioURL, title: customTitle.isEmpty ? nil : customTitle) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
-                case .success(let mdURL):
-                    self?.statusLabel.stringValue = "Transcription saved"
-                    self?.statusLabel.textColor = .secondaryLabelColor
-                    NSWorkspace.shared.activateFileViewerSelecting([mdURL])
+                case .success(let info):
+                    self?.statusLabel.stringValue = info.usedFallback
+                        ? "Transcription saved (basic formatting)"
+                        : "Transcription saved"
+                    self?.statusLabel.textColor = info.usedFallback ? .systemOrange : .secondaryLabelColor
+                    NSWorkspace.shared.activateFileViewerSelecting([info.url])
                 case .failure(let error):
                     self?.statusLabel.stringValue = "Transcription failed: \(error.localizedDescription)"
                     self?.statusLabel.textColor = .systemRed
@@ -643,7 +645,7 @@ private struct AnthropicResponse: Decodable {
 
 final class Transcriber {
     /// Transcribes a WAV file to markdown using whisper.cpp (local, fast, offline).
-    static func transcribe(_ audioURL: URL, title: String? = nil, completion: @escaping (Result<URL, Error>) -> Void) {
+    static func transcribe(_ audioURL: URL, title: String? = nil, completion: @escaping (Result<(url: URL, usedFallback: Bool), Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             // Find whisper-cli binary
             let whisperBin: String
@@ -705,17 +707,17 @@ final class Transcriber {
                 formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
                 let timestamp = formatter.string(from: Date())
                 let heading = title ?? audioURL.deletingPathExtension().lastPathComponent
-                let formatted = formatTranscript(transcript.trimmingCharacters(in: .whitespacesAndNewlines))
+                let result = formatTranscript(transcript.trimmingCharacters(in: .whitespacesAndNewlines))
 
                 let md = """
                 # \(heading)
                 **Recorded:** \(timestamp)
 
-                \(formatted)
+                \(result.text)
                 """
 
                 try md.write(to: mdURL, atomically: true, encoding: .utf8)
-                completion(.success(mdURL))
+                completion(.success((mdURL, result.usedFallback)))
 
             } catch {
                 completion(.failure(error))
@@ -724,15 +726,16 @@ final class Transcriber {
     }
 
     /// Formats raw transcript via Anthropic API; falls back to simple paragraph merging on failure.
-    private static func formatTranscript(_ raw: String) -> String {
-        // Try Anthropic first
-        if let key = loadAnthropicKey() {
+    /// Returns the formatted text and whether the fallback was used.
+    private static func formatTranscript(_ raw: String) -> (text: String, usedFallback: Bool) {
+        let key = loadAnthropicKey()
+        if let key = key {
             if let formatted = formatWithAnthropic(raw: raw, apiKey: key) {
-                return formatted
+                return (formatted, false)
             }
         }
         // Fallback: simple sentence/paragraph grouping
-        return simpleFormat(raw)
+        return (simpleFormat(raw), true)
     }
 
     private static func loadAnthropicKey() -> String? {
