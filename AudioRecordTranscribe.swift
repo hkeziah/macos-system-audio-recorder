@@ -678,6 +678,9 @@ final class Transcriber {
                 // Clean up the .txt file
                 try? FileManager.default.removeItem(atPath: txtPath)
 
+                // Format the raw transcript into readable paragraphs
+                let formatted = Self.formatTranscript(transcript)
+
                 // Write markdown
                 let mdURL = audioURL.deletingPathExtension().appendingPathExtension("md")
                 let formatter = DateFormatter()
@@ -689,7 +692,7 @@ final class Transcriber {
                 # \(heading)
                 **Recorded:** \(timestamp)
 
-                \(transcript.trimmingCharacters(in: .whitespacesAndNewlines))
+                \(formatted)
                 """
 
                 try md.write(to: mdURL, atomically: true, encoding: .utf8)
@@ -699,6 +702,47 @@ final class Transcriber {
                 completion(.failure(error))
             }
         }
+    }
+
+    /// Merges whisper.cpp's hard-wrapped lines into flowing paragraphs for readability.
+    private static func formatTranscript(_ raw: String) -> String {
+        // Join all lines with spaces, collapsing multiple spaces
+        let joined = raw
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        // Split into sentences on period/exclamation/question + space or end
+        var sentences: [String] = []
+        var current = ""
+        for char in joined {
+            current.append(char)
+            if char == "." || char == "!" || char == "?" {
+                sentences.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            }
+        }
+        let remainder = current.trimmingCharacters(in: .whitespaces)
+        if !remainder.isEmpty {
+            sentences.append(remainder)
+        }
+
+        // Group sentences into paragraphs (4-5 sentences per paragraph)
+        var paragraphs: [String] = []
+        var para: [String] = []
+        for sentence in sentences {
+            para.append(sentence)
+            if para.count >= 4 {
+                paragraphs.append(para.joined(separator: " "))
+                para = []
+            }
+        }
+        if !para.isEmpty {
+            paragraphs.append(para.joined(separator: " "))
+        }
+
+        return paragraphs.joined(separator: "\n\n")
     }
 
     private static func findBrewBinary(_ name: String) -> String? {
